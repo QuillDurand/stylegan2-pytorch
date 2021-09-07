@@ -11,6 +11,7 @@ from torch.utils import data
 import torch.distributed as dist
 from torchvision import transforms, utils
 from tqdm import tqdm
+import gc
 
 try:
     import wandb
@@ -156,7 +157,7 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
     if args.augment and args.augment_p == 0:
         ada_augment = AdaptiveAugment(args.ada_target, args.ada_length, 8, device)
 
-    sample_z = torch.randn(args.n_sample, args.latent, device=device)
+    sample_z = mixing_noise(args.n_sample, args.latent, 0, device=device)
 
     for idx in pbar:
         i = idx + args.start_iter
@@ -168,12 +169,28 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
 
         real_img = next(loader)
         real_img = real_img.to(device)
+#         utils.save_image(
+#                         real_img,
+#                         f"sample/reals{str(i).zfill(6)}.png",
+#                         nrow=1,
+#                         normalize=True,
+#                         range=(-1, 1),
+#                     )
 
         requires_grad(generator, False)
         requires_grad(discriminator, True)
 
         noise = mixing_noise(args.batch, args.latent, args.mixing, device)
         fake_img, _ = generator(noise)
+#         utils.save_image(
+#                         fake_img,
+#                         f"sample/fakes{str(i).zfill(6)}.png",
+#                         nrow=1,
+#                         normalize=True,
+#                         range=(-1, 1),
+#                     )
+#         gc.collect()
+#         torch.cuda.empty_cache()
 
         if args.augment:
             real_img_aug, _ = augment(real_img, ada_aug_p)
@@ -265,7 +282,7 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
         loss_dict["path"] = path_loss
         loss_dict["path_length"] = path_lengths.mean()
 
-        accumulate(g_ema, g_module, accum)
+        #accumulate(g_ema, g_module, accum)
 
         loss_reduced = reduce_loss_dict(loss_dict)
 
@@ -304,8 +321,12 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
 
             if i % 100 == 0:
                 with torch.no_grad():
-                    g_ema.eval()
-                    sample, _ = g_ema([sample_z])
+                    #g_ema.eval()
+                    #sample, _ = g_ema([sample_z])
+                    #g_module.eval()
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                    sample, _ = generator(sample_z)
                     utils.save_image(
                         sample,
                         f"sample/{str(i).zfill(6)}.png",
@@ -313,6 +334,8 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
                         normalize=True,
                         range=(-1, 1),
                     )
+                    gc.collect()
+                    torch.cuda.empty_cache()
 
             if i % 10000 == 0:
                 torch.save(
@@ -449,17 +472,50 @@ if __name__ == "__main__":
     elif args.arch == 'swagan':
         from swagan import Generator, Discriminator
 
-    generator = Generator(
-        args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier
-    ).to(device)
-    discriminator = Discriminator(
-        args.size, channel_multiplier=args.channel_multiplier
-    ).to(device)
-    g_ema = Generator(
-        args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier
-    ).to(device)
-    g_ema.eval()
-    accumulate(g_ema, generator, 0)
+    if args.ckpt is None:
+        generator = Generator(
+            args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier
+        ).to(device)
+        discriminator = Discriminator(
+            args.size, channel_multiplier=args.channel_multiplier
+        ).to(device)
+        g_ema = Generator(
+            args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier
+        ).to(device)
+    
+    if args.ckpt is not None:
+        print("load model:", args.ckpt)
+
+        ckpt = torch.load(args.ckpt, map_location=lambda storage, loc: storage)
+
+        try:
+            ckpt_name = os.path.basename(args.ckpt)
+            args.start_iter = int(os.path.splitext(ckpt_name)[0])
+
+        except ValueError:
+            pass
+
+        generator = ckpt["g"].to(device)
+#         sample_z = torch.randn(args.n_sample, args.latent, device=device)
+#         sample, _ = generator([sample_z])
+#         utils.save_image(
+#             sample,
+#             f"sample/{str(999).zfill(6)}.png",
+#             nrow=int(args.n_sample ** 0.5),
+#             normalize=True,
+#             range=(-1, 1),
+#         )
+        discriminator= ckpt["disc"].to(device)
+#        g_ema = ckpt["g_train"].to(device)
+#         print(generator)
+#         print(g_ema)
+#         print(discriminator)
+        g_ema=generator
+
+        #g_optim.load_state_dict(ckpt["g_optim"])
+        #d_optim.load_state_dict(ckpt["d_optim"])
+    #g_ema.eval()
+    #accumulate(g_ema, generator, 0)
 
     g_reg_ratio = args.g_reg_every / (args.g_reg_every + 1)
     d_reg_ratio = args.d_reg_every / (args.d_reg_every + 1)
@@ -475,24 +531,7 @@ if __name__ == "__main__":
         betas=(0 ** d_reg_ratio, 0.99 ** d_reg_ratio),
     )
 
-    if args.ckpt is not None:
-        print("load model:", args.ckpt)
 
-        ckpt = torch.load(args.ckpt, map_location=lambda storage, loc: storage)
-
-        try:
-            ckpt_name = os.path.basename(args.ckpt)
-            args.start_iter = int(os.path.splitext(ckpt_name)[0])
-
-        except ValueError:
-            pass
-
-        generator.load_state_dict(ckpt["g_train"])
-        discriminator.load_state_dict(ckpt["disc"])
-        g_ema.load_state_dict(ckpt["g"])
-
-        #g_optim.load_state_dict(ckpt["g_optim"])
-        #d_optim.load_state_dict(ckpt["d_optim"])
 
     if args.distributed:
         generator = nn.parallel.DistributedDataParallel(

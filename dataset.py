@@ -14,6 +14,7 @@ class MultiResolutionDataset(Dataset):
             lock=False,
             readahead=False,
             meminit=False,
+            subdir=False,
         )
 
         if not self.env:
