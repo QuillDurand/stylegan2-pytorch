@@ -416,15 +416,15 @@ class Generator(nn.Module):
         self.style = nn.Sequential(*layers)
 
         self.channels = {
-            4: 512,
-            8: 512,
-            16: 512,
-            32: 512,
-            64: 256 * channel_multiplier,
-            128: 128 * channel_multiplier,
-            256: 64 * channel_multiplier,
-            512: 32 * channel_multiplier,
-            1024: 16 * channel_multiplier,
+            4: 1024,
+            8: 1024,
+            16: 1024,
+            32: 1024,
+            64: 512 * channel_multiplier,
+            128: 256 * channel_multiplier,
+            256: 128 * channel_multiplier,
+            512: 64 * channel_multiplier,
+            1024: 32 * channel_multiplier,
         }
 
         self.input = ConstantInput(self.channels[4])
@@ -450,7 +450,7 @@ class Generator(nn.Module):
 
         for i in range(3, self.log_size + 1):
             out_channel = self.channels[2 ** i]
-
+            print("layer: ", in_channel, out_channel)
             self.convs.append(
                 StyledConv(
                     in_channel,
@@ -660,6 +660,7 @@ class Discriminator(nn.Module):
 
         for i in range(log_size, 2, -1):
             out_channel = channels[2 ** (i - 1)]
+            print("layer: ", in_channel, out_channel)
 
             convs.append(ResBlock(in_channel, out_channel, blur_kernel))
 
@@ -667,10 +668,10 @@ class Discriminator(nn.Module):
 
         self.convs = nn.Sequential(*convs)
 
-        self.stddev_group = 4
-        self.stddev_feat = 1
+        self.stddev_group = 32
+        self.stddev_feat = 4
 
-        self.final_conv = ConvLayer(in_channel + 1, channels[4], 3)
+        self.final_conv = ConvLayer(in_channel + self.stddev_feat, channels[4], 3)
         self.final_linear = nn.Sequential(
             EqualLinear(channels[4] * 4 * 4, channels[4], activation="fused_lrelu"),
             EqualLinear(channels[4], 1),

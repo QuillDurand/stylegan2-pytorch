@@ -10,7 +10,8 @@ def generate(args, g_ema, device, mean_latent):
 
     with torch.no_grad():
         g_ema.eval()
-        for i in tqdm(range(args.pics)):
+        for i in tqdm(range(args.start_index, args.start_index + args.pics)):
+            torch.manual_seed(i)
             sample_z = torch.randn(args.sample, args.latent, device=device)
 
             sample, _ = g_ema(
@@ -43,6 +44,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--pics", type=int, default=20, help="number of images to be generated"
     )
+    parser.add_argument(
+        "--start_index", type=int, default=0
+    )
     parser.add_argument("--truncation", type=float, default=1, help="truncation ratio")
     parser.add_argument(
         "--truncation_mean",
@@ -63,17 +67,17 @@ if __name__ == "__main__":
         help="channel multiplier of the generator. config-f = 2, else = 1",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args("--ckpt=../tadne-finetuning/network-tadne.pt --size=512 --pics=50000 --start_index=50000".split())
 
-    args.latent = 512
-    args.n_mlp = 8
+    args.latent = 1024
+    args.n_mlp = 4
 
     g_ema = Generator(
         args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier
     ).to(device)
     checkpoint = torch.load(args.ckpt)
-
-    g_ema.load_state_dict(checkpoint["g_ema"])
+    print(g_ema)
+    g_ema.load_state_dict(checkpoint["g_ema"], strict=False)
 
     if args.truncation < 1:
         with torch.no_grad():

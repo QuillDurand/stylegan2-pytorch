@@ -11,7 +11,7 @@ from torchvision.transforms import functional as trans_fn
 
 
 def resize_and_convert(img, size, resample, quality=100):
-    img = trans_fn.resize(img, size, resample)
+    #img = trans_fn.resize(img, size, resample)
     img = trans_fn.center_crop(img, size)
     buffer = BytesIO()
     img.save(buffer, format="jpeg", quality=quality)
@@ -84,8 +84,8 @@ if __name__ == "__main__":
         default="lanczos",
         help="resampling methods for resizing images",
     )
-    parser.add_argument("path", type=str, help="path to the image dataset")
-
+    parser.add_argument("--path", type=str, help="path to the image dataset")
+    print("REMINDER: I disabled resizing in resize_and_convert")
     args = parser.parse_args()
 
     resample_map = {"lanczos": Image.LANCZOS, "bilinear": Image.BILINEAR}

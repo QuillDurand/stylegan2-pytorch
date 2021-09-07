@@ -334,7 +334,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="StyleGAN2 trainer")
 
-    parser.add_argument("path", type=str, help="path to the lmdb dataset")
+    parser.add_argument("--path", type=str, help="path to the lmdb dataset")
     parser.add_argument('--arch', type=str, default='stylegan2', help='model architectures (stylegan2 | swagan)')
     parser.add_argument(
         "--iter", type=int, default=800000, help="total training iterations"
@@ -438,8 +438,8 @@ if __name__ == "__main__":
         torch.distributed.init_process_group(backend="nccl", init_method="env://")
         synchronize()
 
-    args.latent = 512
-    args.n_mlp = 8
+    args.latent = 1024
+    args.n_mlp = 4
 
     args.start_iter = 0
 
@@ -487,12 +487,12 @@ if __name__ == "__main__":
         except ValueError:
             pass
 
-        generator.load_state_dict(ckpt["g"])
-        discriminator.load_state_dict(ckpt["d"])
-        g_ema.load_state_dict(ckpt["g_ema"])
+        generator.load_state_dict(ckpt["g_train"])
+        discriminator.load_state_dict(ckpt["disc"])
+        g_ema.load_state_dict(ckpt["g"])
 
-        g_optim.load_state_dict(ckpt["g_optim"])
-        d_optim.load_state_dict(ckpt["d_optim"])
+        #g_optim.load_state_dict(ckpt["g_optim"])
+        #d_optim.load_state_dict(ckpt["d_optim"])
 
     if args.distributed:
         generator = nn.parallel.DistributedDataParallel(
