@@ -31,6 +31,47 @@ from distributed import (
 from op import conv2d_gradfix
 from non_leaking import augment, AdaptiveAugment
 
+class warmupOpt:
+    "Optim wrapper that implements rate."
+    def __init__(self, baserate, warmup, optimizer):
+        self.optimizer = optimizer
+        self._step = 0
+        self.warmup = warmup
+        self._rate = 0
+        self._baserate = baserate
+    
+    def state_dict(self):
+        """Returns the state of the warmup scheduler as a :class:`dict`.
+        It contains an entry for every variable in self.__dict__ which
+        is not the optimizer.
+        """
+        return {key: value for key, value in self.__dict__.items() if key != 'optimizer'}
+    
+    def load_state_dict(self, state_dict):
+        """Loads the warmup scheduler's state.
+        Arguments:
+            state_dict (dict): warmup scheduler state. Should be an object returned
+                from a call to :meth:`state_dict`.
+        """
+        self.__dict__.update(state_dict) 
+        
+    def step(self):
+        "Update parameters and rate"
+        self._step += 1
+        rate = self.rate()
+        for p in self.optimizer.param_groups:
+            p['lr'] = rate
+        self._rate = rate
+        self.optimizer.step()
+        
+    def rate(self, step = None):
+        "Implement `lrate` above"
+        if step is None:
+            step = self._step
+        if step <= self.warmup:
+            return self._baserate * (step/self.warmup)
+        return self._baserate
+
 
 def data_sampler(dataset, shuffle, distributed):
     if distributed:
@@ -79,10 +120,15 @@ def d_r1_loss(real_pred, real_img):
     return grad_penalty
 
 
-def g_nonsaturating_loss(fake_pred):
-    loss = F.softplus(-fake_pred).mean()
-
-    return loss
+def g_nonsaturating_loss(fake_pred, topk=False, batch=None):
+    losses = F.softplus(-fake_pred)
+    if not topk:
+        return losses.mean()
+#     print(losses)
+#     print(batch, batch//2)
+    lowlosses = torch.topk(losses, batch//2, largest=False, dim=0)
+#     print(losses, lowlosses)
+    return lowlosses.values.mean()
 
 
 def g_path_regularize(fake_img, latents, mean_path_length, decay=0.01):
@@ -157,7 +203,8 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
     if args.augment and args.augment_p == 0:
         ada_augment = AdaptiveAugment(args.ada_target, args.ada_length, 8, device)
 
-    sample_z = mixing_noise(args.n_sample, args.latent, 0, device=device)
+    torch.random.manual_seed(1421)
+    sample_z = mixing_noise(args.n_sample, args.latent, 0, device='cpu')
 
     for idx in pbar:
         i = idx + args.start_iter
@@ -246,7 +293,7 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
             fake_img, _ = augment(fake_img, ada_aug_p)
 
         fake_pred = discriminator(fake_img)
-        g_loss = g_nonsaturating_loss(fake_pred)
+        g_loss = g_nonsaturating_loss(fake_pred, topk=args.topk, batch=args.batch)
 
         loss_dict["g"] = g_loss
 
@@ -319,13 +366,14 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
                     }
                 )
 
-            if i % 100 == 0:
+            if i % 500 == 0:
                 with torch.no_grad():
                     #g_ema.eval()
                     #sample, _ = g_ema([sample_z])
                     #g_module.eval()
                     gc.collect()
                     torch.cuda.empty_cache()
+                    generator = generator.to('cpu')
                     sample, _ = generator(sample_z)
                     utils.save_image(
                         sample,
@@ -334,10 +382,11 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
                         normalize=True,
                         range=(-1, 1),
                     )
+                    generator = generator.to(device)
                     gc.collect()
                     torch.cuda.empty_cache()
 
-            if i % 10000 == 0:
+            if i % (40000//args.batch) == 0:
                 torch.save(
                     {
                         "g": g_module.state_dict(),
@@ -411,6 +460,7 @@ if __name__ == "__main__":
         help="path to the checkpoints to resume training",
     )
     parser.add_argument("--lr", type=float, default=0.002, help="learning rate")
+    parser.add_argument("--warmup", type=int, default=100, help="warmup steps")
     parser.add_argument(
         "--channel_multiplier",
         type=int,
@@ -419,6 +469,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--wandb", action="store_true", help="use weights and biases logging"
+    )
+    parser.add_argument(
+        "--topk", action="store_true"
     )
     parser.add_argument(
         "--local_rank", type=int, default=0, help="local rank for distributed training"
@@ -472,16 +525,16 @@ if __name__ == "__main__":
     elif args.arch == 'swagan':
         from swagan import Generator, Discriminator
 
-    if args.ckpt is None:
-        generator = Generator(
-            args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier
-        ).to(device)
-        discriminator = Discriminator(
-            args.size, channel_multiplier=args.channel_multiplier
-        ).to(device)
-        g_ema = Generator(
-            args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier
-        ).to(device)
+    
+    generator = Generator(
+        args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier
+    ).to(device)
+    discriminator = Discriminator(
+        args.size, channel_multiplier=args.channel_multiplier
+    ).to(device)
+#     g_ema = Generator(
+#         args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier
+#     ).to(device)
     
     if args.ckpt is not None:
         print("load model:", args.ckpt)
@@ -495,7 +548,8 @@ if __name__ == "__main__":
         except ValueError:
             pass
 
-        generator = ckpt["g"].to(device)
+        #generator = ckpt["g"].to(device)
+        generator.load_state_dict(ckpt["g"])
 #         sample_z = torch.randn(args.n_sample, args.latent, device=device)
 #         sample, _ = generator([sample_z])
 #         utils.save_image(
@@ -505,7 +559,8 @@ if __name__ == "__main__":
 #             normalize=True,
 #             range=(-1, 1),
 #         )
-        discriminator= ckpt["disc"].to(device)
+        #discriminator= ckpt["disc"].to(device)
+        discriminator.load_state_dict(ckpt["d"])
 #        g_ema = ckpt["g_train"].to(device)
 #         print(generator)
 #         print(g_ema)
@@ -520,16 +575,16 @@ if __name__ == "__main__":
     g_reg_ratio = args.g_reg_every / (args.g_reg_every + 1)
     d_reg_ratio = args.d_reg_every / (args.d_reg_every + 1)
 
-    g_optim = optim.Adam(
+    g_optim = warmupOpt(args.lr * g_reg_ratio, args.warmup, optim.Adam(
         generator.parameters(),
         lr=args.lr * g_reg_ratio,
         betas=(0 ** g_reg_ratio, 0.99 ** g_reg_ratio),
-    )
-    d_optim = optim.Adam(
+    ))
+    d_optim = warmupOpt(args.lr * g_reg_ratio, args.warmup, optim.Adam(
         discriminator.parameters(),
         lr=args.lr * d_reg_ratio,
         betas=(0 ** d_reg_ratio, 0.99 ** d_reg_ratio),
-    )
+    ))
 
 
 
