@@ -149,9 +149,9 @@ def g_path_regularize(fake_img, latents, mean_path_length, decay=0.01):
 
 def make_noise(batch, latent_dim, n_noise, device):
     if n_noise == 1:
-        return torch.randn(batch, latent_dim, device=device)
+        return torch.clamp(torch.randn(batch, latent_dim, device=device), min=0)
 
-    noises = torch.randn(n_noise, batch, latent_dim, device=device).unbind(0)
+    noises = torch.clamp(torch.randn(n_noise, batch, latent_dim, device=device).unbind(0), min=0)
 
     return noises
 
@@ -183,8 +183,8 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
     d_loss_val = 0
     r1_loss = torch.tensor(0.0, device=device)
     g_loss_val = 0
-    path_loss = torch.tensor(0.0, device=device)
-    path_lengths = torch.tensor(0.0, device=device)
+#     path_loss = torch.tensor(0.0, device=device)
+#     path_lengths = torch.tensor(0.0, device=device)
     mean_path_length_avg = 0
     loss_dict = {}
 
@@ -301,51 +301,50 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
         g_loss.backward()
         g_optim.step()
 
-        g_regularize = i % args.g_reg_every == 0
+#         g_regularize = i % args.g_reg_every == 0
 
-        if g_regularize:
-            path_batch_size = max(1, args.batch // args.path_batch_shrink)
-            noise = mixing_noise(path_batch_size, args.latent, args.mixing, device)
-            fake_img, latents = generator(noise, return_latents=True)
+#         if g_regularize:
+#             path_batch_size = max(1, args.batch // args.path_batch_shrink)
+#             noise = mixing_noise(path_batch_size, args.latent, args.mixing, device)
+#             fake_img, latents = generator(noise, return_latents=True)
 
-            path_loss, mean_path_length, path_lengths = g_path_regularize(
-                fake_img, latents, mean_path_length
-            )
+#             path_loss, mean_path_length, path_lengths = g_path_regularize(
+#                 fake_img, latents, mean_path_length
+#             )
 
-            generator.zero_grad()
-            weighted_path_loss = args.path_regularize * args.g_reg_every * path_loss
+#             generator.zero_grad()
+#             weighted_path_loss = args.path_regularize * args.g_reg_every * path_loss
 
-            if args.path_batch_shrink:
-                weighted_path_loss += 0 * fake_img[0, 0, 0, 0]
+#             if args.path_batch_shrink:
+#                 weighted_path_loss += 0 * fake_img[0, 0, 0, 0]
 
-            weighted_path_loss.backward()
+#             weighted_path_loss.backward()
 
-            g_optim.step()
+#             g_optim.step()
 
-            mean_path_length_avg = (
-                reduce_sum(mean_path_length).item() / get_world_size()
-            )
+#             mean_path_length_avg = (
+#                 reduce_sum(mean_path_length).item() / get_world_size()
+#             )
 
-        loss_dict["path"] = path_loss
-        loss_dict["path_length"] = path_lengths.mean()
+#         loss_dict["path"] = path_loss
+#         loss_dict["path_length"] = path_lengths.mean()
 
-        #accumulate(g_ema, g_module, accum)
+        accumulate(g_ema, g_module, accum)
 
         loss_reduced = reduce_loss_dict(loss_dict)
 
         d_loss_val = loss_reduced["d"].mean().item()
         g_loss_val = loss_reduced["g"].mean().item()
         r1_val = loss_reduced["r1"].mean().item()
-        path_loss_val = loss_reduced["path"].mean().item()
+#         path_loss_val = loss_reduced["path"].mean().item()
         real_score_val = loss_reduced["real_score"].mean().item()
         fake_score_val = loss_reduced["fake_score"].mean().item()
-        path_length_val = loss_reduced["path_length"].mean().item()
+#         path_length_val = loss_reduced["path_length"].mean().item()
 
         if get_rank() == 0:
             pbar.set_description(
                 (
                     f"d: {d_loss_val:.4f}; g: {g_loss_val:.4f}; r1: {r1_val:.4f}; "
-                    f"path: {path_loss_val:.4f}; mean path: {mean_path_length_avg:.4f}; "
                     f"augment: {ada_aug_p:.4f}"
                 )
             )
@@ -358,31 +357,31 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
                         "Augment": ada_aug_p,
                         "Rt": r_t_stat,
                         "R1": r1_val,
-                        "Path Length Regularization": path_loss_val,
-                        "Mean Path Length": mean_path_length,
+#                         "Path Length Regularization": path_loss_val,
+#                         "Mean Path Length": mean_path_length,
                         "Real Score": real_score_val,
                         "Fake Score": fake_score_val,
-                        "Path Length": path_length_val,
+#                         "Path Length": path_length_val,
                     }
                 )
 
-            if i % 500 == 0:
+            if i % 1000 == 0:
                 with torch.no_grad():
                     #g_ema.eval()
                     #sample, _ = g_ema([sample_z])
                     #g_module.eval()
                     gc.collect()
                     torch.cuda.empty_cache()
-                    generator = generator.to('cpu')
-                    sample, _ = generator(sample_z)
+                    g_ema = g_ema.to('cpu')
+                    sample, _ = g_ema(sample_z)
                     utils.save_image(
                         sample,
-                        f"sample/{str(i).zfill(6)}.png",
+                        f"sample/{str(i).zfill(7)}.png",
                         nrow=int(args.n_sample ** 0.5),
                         normalize=True,
                         range=(-1, 1),
                     )
-                    generator = generator.to(device)
+                    g_ema = g_ema.to(device)
                     gc.collect()
                     torch.cuda.empty_cache()
 
@@ -397,7 +396,7 @@ def train(args, loader, generator, discriminator, g_optim, d_optim, g_ema, devic
                         "args": args,
                         "ada_aug_p": ada_aug_p,
                     },
-                    f"checkpoint/{str(i).zfill(6)}.pt",
+                    f"checkpoint/{str(i).zfill(7)}.pt",
                 )
 
 
@@ -409,7 +408,7 @@ if __name__ == "__main__":
     parser.add_argument("--path", type=str, help="path to the lmdb dataset")
     parser.add_argument('--arch', type=str, default='stylegan2', help='model architectures (stylegan2 | swagan)')
     parser.add_argument(
-        "--iter", type=int, default=800000, help="total training iterations"
+        "--iter", type=int, default=8000000, help="total training iterations"
     )
     parser.add_argument(
         "--batch", type=int, default=16, help="batch sizes for each gpus"
@@ -431,6 +430,11 @@ if __name__ == "__main__":
         type=float,
         default=2,
         help="weight of the path length regularization",
+    )
+    parser.add_argument(
+        "--d_lr_mult",
+        type=float,
+        default=1
     )
     parser.add_argument(
         "--path_batch_shrink",
@@ -532,9 +536,9 @@ if __name__ == "__main__":
     discriminator = Discriminator(
         args.size, channel_multiplier=args.channel_multiplier
     ).to(device)
-#     g_ema = Generator(
-#         args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier
-#     ).to(device)
+    g_ema = Generator(
+        args.size, args.latent, args.n_mlp, channel_multiplier=args.channel_multiplier
+    ).to(device)
     
     if args.ckpt is not None:
         print("load model:", args.ckpt)
@@ -548,7 +552,7 @@ if __name__ == "__main__":
         except ValueError:
             pass
 
-        #generator = ckpt["g"].to(device)
+#         generator = ckpt["g"].to(device)
         generator.load_state_dict(ckpt["g"])
 #         sample_z = torch.randn(args.n_sample, args.latent, device=device)
 #         sample, _ = generator([sample_z])
@@ -559,18 +563,18 @@ if __name__ == "__main__":
 #             normalize=True,
 #             range=(-1, 1),
 #         )
-        #discriminator= ckpt["disc"].to(device)
+#         discriminator= ckpt["disc"].to(device)
         discriminator.load_state_dict(ckpt["d"])
-#        g_ema = ckpt["g_train"].to(device)
+        g_ema.load_state_dict(ckpt["g_ema"])
 #         print(generator)
 #         print(g_ema)
 #         print(discriminator)
-        g_ema=generator
+#         g_ema=generator
 
         #g_optim.load_state_dict(ckpt["g_optim"])
         #d_optim.load_state_dict(ckpt["d_optim"])
-    #g_ema.eval()
-    #accumulate(g_ema, generator, 0)
+    g_ema.eval()
+    accumulate(g_ema, generator, 0)
 
     g_reg_ratio = args.g_reg_every / (args.g_reg_every + 1)
     d_reg_ratio = args.d_reg_every / (args.d_reg_every + 1)
@@ -580,9 +584,9 @@ if __name__ == "__main__":
         lr=args.lr * g_reg_ratio,
         betas=(0 ** g_reg_ratio, 0.99 ** g_reg_ratio),
     ))
-    d_optim = warmupOpt(args.lr * g_reg_ratio, args.warmup, optim.Adam(
+    d_optim = warmupOpt(args.lr * g_reg_ratio * args.d_lr_mult, args.warmup, optim.Adam(
         discriminator.parameters(),
-        lr=args.lr * d_reg_ratio,
+        lr=args.lr * d_reg_ratio * args.d_lr_mult,
         betas=(0 ** d_reg_ratio, 0.99 ** d_reg_ratio),
     ))
 
@@ -605,7 +609,7 @@ if __name__ == "__main__":
 
     transform = transforms.Compose(
         [
-            transforms.RandomHorizontalFlip(),
+#             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5), inplace=True),
         ]
